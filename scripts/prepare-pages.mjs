@@ -6,6 +6,9 @@ const lpDir = path.join(outDir, "lp");
 const publicAssetsDir = path.resolve(process.cwd(), "public", "assets");
 const outAssetsDir = path.join(outDir, "assets");
 const keepLpRoutes = new Set(["cacao-fruit", "cacao-fruit-v2"]);
+const repositoryName = process.env.GITHUB_REPOSITORY?.split("/")[1] ?? "";
+const pagesBasePath = repositoryName ? `/${repositoryName}` : "";
+const shouldRewriteForPages = process.env.GITHUB_ACTIONS === "true" && Boolean(repositoryName);
 
 const redirectHtml = `<!doctype html>
 <html lang="en">
@@ -26,6 +29,39 @@ async function ensureDir(dirPath) {
 
 async function removeIfExists(targetPath) {
   await fs.rm(targetPath, { recursive: true, force: true });
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function rewriteAssetPathsForPages(baseDir) {
+  const entries = await fs.readdir(baseDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const entryPath = path.join(baseDir, entry.name);
+    if (entry.isDirectory()) {
+      await rewriteAssetPathsForPages(entryPath);
+      continue;
+    }
+
+    if (!/\.(html|css|js|txt)$/i.test(entry.name)) {
+      continue;
+    }
+
+    const original = await fs.readFile(entryPath, "utf8");
+    const assetPattern = /(["'(:])\/assets\//g;
+    const urlPattern = /url\(\/assets\//g;
+    const nextContent = original
+      .replace(assetPattern, `$1${pagesBasePath}/assets/`)
+      .replace(urlPattern, `url(${pagesBasePath}/assets/`);
+
+    const duplicatePattern = new RegExp(`${escapeRegExp(pagesBasePath)}${escapeRegExp(pagesBasePath)}/assets/`, "g");
+    const normalized = nextContent.replace(duplicatePattern, `${pagesBasePath}/assets/`);
+
+    if (normalized !== original) {
+      await fs.writeFile(entryPath, normalized, "utf8");
+    }
+  }
 }
 
 async function main() {
@@ -65,6 +101,10 @@ async function main() {
     await fs.cp(publicAssetsDir, outAssetsDir, { recursive: true });
   } else {
     throw new Error("Missing public/assets directory required by /lp/cacao-fruit");
+  }
+
+  if (shouldRewriteForPages) {
+    await rewriteAssetPathsForPages(outDir);
   }
 
   await fs.writeFile(path.join(outDir, "index.html"), redirectHtml, "utf8");
